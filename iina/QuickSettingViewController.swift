@@ -15,6 +15,92 @@ fileprivate let eqRenameMenuItemTag = -2
 fileprivate let eqSaveMenuItemTag = -3
 fileprivate let eqCustomMenuItemTag = 1000
 
+struct SubtitleBlock {
+  let index: Int
+  let timestamp: String
+  let text: String
+}
+
+//func translateGroup(_ blocks: [SubtitleBlock], source: String, target: String, completion: @escaping (Result<[String], Error>) -> Void) {
+//    // Combine subtitle block texts with newlines
+//    let textToTranslate = blocks.map { $0.text }.joined(separator: "\n")
+//    
+//    guard let url = URL(string: "http://localhost:5001/translate") else {
+//        completion(.failure(NSError(domain: "Invalid URL", code: -1, userInfo: nil)))
+//        return
+//    }
+//
+//    var request = URLRequest(url: url)
+//    request.httpMethod = "POST"
+//    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+//    request.timeoutInterval = 300.0 // Set timeout to 30 seconds
+//
+//    let body: [String: Any] = [
+//        "q": textToTranslate,
+//        "source": source,
+//        "target": target
+//    ]
+//
+//    do {
+//        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+//    } catch {
+//        completion(.failure(error))
+//        return
+//    }
+//
+//    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+//        if let error = error {
+//            completion(.failure(error))
+//            return
+//        }
+//
+//        // Check the response status code
+//        guard let httpResponse = response as? HTTPURLResponse else {
+//            completion(.failure(NSError(domain: "No response", code: -1, userInfo: nil)))
+//            return
+//        }
+//
+//        if !(200...299).contains(httpResponse.statusCode) {
+//            // Print the response body for debugging
+//            if let data = data, let responseBody = String(data: data, encoding: .utf8) {
+//                print("Response Body: \(responseBody)")
+//            }
+//
+//            let statusCode = httpResponse.statusCode
+//            completion(.failure(NSError(domain: "Invalid response", code: statusCode, userInfo: nil)))
+//            return
+//        }
+//
+//        guard let data = data else {
+//            completion(.failure(NSError(domain: "No data received", code: -1, userInfo: nil)))
+//            return
+//        }
+//
+//        do {
+//            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+//               let translatedText = json["translatedText"] as? String {
+//                let translatedSentences = translatedText.components(separatedBy: "\n")
+//                completion(.success(translatedSentences))
+//            } else {
+//                completion(.failure(NSError(domain: "Unexpected response format", code: -1, userInfo: nil)))
+//            }
+//        } catch {
+//            completion(.failure(error))
+//        }
+//    }
+//
+//    task.resume()
+//}
+
+extension TimeInterval {
+    func formattedTime() -> String {
+        let hours = Int(self) / 3600
+        let minutes = (Int(self) % 3600) / 60
+        let seconds = Int(self) % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+    }
+}
+
 class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, SidebarViewController {
   override var nibName: NSNib.Name {
     return NSNib.Name("QuickSettingViewController")
@@ -106,6 +192,8 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
   @IBOutlet weak var audioTableView: NSTableView!
   @IBOutlet weak var subTableView: NSTableView!
   @IBOutlet weak var secSubTableView: NSTableView!
+  
+  @IBOutlet weak var languageDropdown: NSComboBox!
 
   @IBOutlet weak var rotateSegment: NSSegmentedControl!
 
@@ -194,6 +282,44 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
 
   private var lastUsedProfileName: String = ""
   private var inputString: String = ""
+  
+  // Dictionary of language names and their 2-letter codes
+  let languages: [String: String] = [
+      "Arabic": "ar",
+      "Azerbaijani": "az",
+      "Catalan": "ca",
+      "Chinese": "zh",
+      "Czech": "cs",
+      "Danish": "da",
+      "Dutch": "nl",
+      "English": "en",
+      "Esperanto": "eo",
+      "Finnish": "fi",
+      "French": "fr",
+      "German": "de",
+      "Greek": "el",
+      "Hebrew": "he",
+      "Hindi": "hi",
+      "Hungarian": "hu",
+      "Indonesian": "id",
+      "Irish": "ga",
+      "Italian": "it",
+      "Japanese": "ja",
+      "Korean": "ko",
+      "Persian": "fa",
+      "Polish": "pl",
+      "Portuguese": "pt",
+      "Russian": "ru",
+      "Slovak": "sk",
+      "Spanish": "es",
+      "Swedish": "sv",
+      "Turkish": "tr",
+      "Ukrainian": "uk",
+  ]
+  
+  // selected language (English, Russian, Polish, etc.)
+  var selectedLanguage: (String, String) = ("English", "en")
+  
 
   var downShift: CGFloat = 0 {
     didSet {
@@ -238,6 +364,17 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
     eqPopUpButton.selectItem(withTag: eqCustomMenuItemTag)
     lastUsedProfileName = eqPopUpButton.selectedItem!.title
 
+    languageDropdown.removeAllItems()
+    for (lang, _) in languages.sorted(by: { $0.key < $1.key }) {
+      languageDropdown.addItem(withObjectValue: lang)
+    }
+    
+    let defaultIndex = languageDropdown.indexOfItem(withObjectValue: selectedLanguage.0)
+    if defaultIndex >= 0 {
+      languageDropdown.selectItem(at: defaultIndex)
+    }
+    
+    
     func observe(_ name: Notification.Name, block: @escaping (Notification) -> Void) {
       observers.append(NotificationCenter.default.addObserver(forName: name, object: player, queue: .main, using: block))
     }
@@ -944,6 +1081,274 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
     }
   }
 
+  func readSRTFile(at path: String) -> String? {
+      let fileURL = URL(fileURLWithPath: path)
+      do {
+          // Read the content of the file
+          let fileContents = try String(contentsOf: fileURL, encoding: .utf8)
+          return fileContents
+      } catch {
+          // Handle the error, e.g., file not found or unreadable
+          print("Failed to read file: \(error)")
+          return nil
+      }
+  }
+  
+  func parseSRT(_ srtContent: String) -> [SubtitleBlock] {
+      var blocks = [SubtitleBlock]()
+      
+      // Normalize line endings by replacing all variations with "\n"
+      let normalizedContent = srtContent.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+      
+      // Split the content into blocks separated by double newlines
+      let components = normalizedContent.components(separatedBy: "\n\n")
+      
+      for component in components {
+          let lines = component.split(separator: "\n", omittingEmptySubsequences: false) // Split by single newlines
+          if lines.count >= 3, let index = Int(lines[0]) {
+              let timestamp = String(lines[1])
+              let text = lines[2...].joined(separator: " ") // Combine the subtitle text, preserving multiple lines
+              blocks.append(SubtitleBlock(index: index, timestamp: timestamp, text: text))
+          }
+      }
+      
+      return blocks
+  }
+
+  func groupSubtitleBlocks(_ blocks: [SubtitleBlock], maxChars: Int = 6000) -> [[SubtitleBlock]] {
+      var groups = [[SubtitleBlock]]()
+      var currentGroup = [SubtitleBlock]()
+      var currentLength = 0
+
+      for block in blocks {
+          let blockLength = block.text.count // Only count the characters in the text
+
+          // Check if adding this block exceeds the maximum characters
+          if currentLength + blockLength > maxChars {
+              groups.append(currentGroup)
+              currentGroup = [block]
+              currentLength = blockLength // Start new group with this block
+          } else {
+              currentGroup.append(block)
+              currentLength += blockLength
+          }
+      }
+
+      // Add the final group if there are any remaining blocks
+      if !currentGroup.isEmpty {
+          groups.append(currentGroup)
+      }
+
+      return groups
+  }
+
+  func translateGroup(_ blocks: [SubtitleBlock], source: String, target: String, completion: @escaping (Result<[String], Error>) -> Void) {
+      // Собираем только текст субтитров в виде массива
+      let textsToTranslate = blocks.map { $0.text }
+      
+      guard let url = URL(string: "https://translate-pa.googleapis.com/v1/translateHtml") else {
+          completion(.failure(NSError(domain: "Invalid URL", code: -1, userInfo: nil)))
+          return
+      }
+
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.addValue("application/json+protobuf", forHTTPHeaderField: "Content-Type")
+      request.addValue("AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520", forHTTPHeaderField: "x-goog-api-key") // Добавляем API-ключ
+
+      // Форматируем тело запроса в виде массива строк
+      let body: [Any] = [
+        [textsToTranslate, "auto", target],
+        "te"  // флаг "te" как в примере запроса
+      ]
+
+      do {
+        let requestBody = try JSONSerialization.data(withJSONObject: body, options: .prettyPrinted)
+        if let jsonString = String(data: requestBody, encoding: .utf8) {
+            print("Request Body:\n\(jsonString)")
+        }
+        request.httpBody = requestBody
+      } catch {
+          completion(.failure(error))
+          return
+      }
+
+      let task = URLSession.shared.dataTask(with: request) { data, response, error in
+          if let error = error {
+              completion(.failure(error))
+              return
+          }
+
+          // Проверяем код ответа
+          guard let httpResponse = response as? HTTPURLResponse else {
+              completion(.failure(NSError(domain: "No response", code: -1, userInfo: nil)))
+              return
+          }
+
+          if !(200...299).contains(httpResponse.statusCode) {
+              if let data = data, let responseBody = String(data: data, encoding: .utf8) {
+                  print("Response Body: \(responseBody)")
+              }
+              completion(.failure(NSError(domain: "Invalid response", code: httpResponse.statusCode, userInfo: nil)))
+              return
+          }
+
+          guard let data = data else {
+              completion(.failure(NSError(domain: "No data received", code: -1, userInfo: nil)))
+              return
+          }
+
+          // Обрабатываем JSON-ответ
+          do {
+              if let json = try JSONSerialization.jsonObject(with: data) as? [[String]] {
+                  let translatedTexts = json[0] // Первый элемент массива содержит переведённые строки
+                  completion(.success(translatedTexts))
+              } else {
+                  completion(.failure(NSError(domain: "Unexpected response format", code: -1, userInfo: nil)))
+              }
+          } catch {
+              completion(.failure(error))
+          }
+      }
+
+      task.resume()
+  }
+
+  func translateSRT(_ blocks: [SubtitleBlock], source: String, target: String, maxWorkers: Int = 5, completion: @escaping ([SubtitleBlock]) -> Void) {
+      let groups = groupSubtitleBlocks(blocks)
+      let totalGroups = groups.count // Total groups to track progress
+      var completedGroups = 0 // Track the completed groups
+
+      let queue = OperationQueue()
+      queue.maxConcurrentOperationCount = maxWorkers
+      
+      var translatedGroups = [(index: Int, blocks: [SubtitleBlock])]()
+      let dispatchGroup = DispatchGroup()
+      let syncQueue = DispatchQueue(label: "com.iina.translateSRT.syncQueue") // Serial queue for thread safety
+      
+      // Track start time to calculate elapsed and estimated remaining time
+      let startTime = Date()
+
+      for (groupIndex, group) in groups.enumerated() {
+          dispatchGroup.enter()
+          queue.addOperation {
+            self.translateGroup(group, source: source, target: target) { result in
+                  switch result {
+                  case .success(let translatedTexts):
+                      var translatedBlocksInGroup = [SubtitleBlock]()
+                      for (i, translatedText) in translatedTexts.enumerated() {
+                          let originalBlock = group[i]
+                          let translatedBlock = SubtitleBlock(index: originalBlock.index, timestamp: originalBlock.timestamp, text: translatedText)
+                          translatedBlocksInGroup.append(translatedBlock)
+                      }
+                      
+                      // Add translated group along with its index to maintain order in a thread-safe manner
+                      syncQueue.async {
+                          translatedGroups.append((index: groupIndex, blocks: translatedBlocksInGroup))
+                      }
+                  case .failure(let error):
+                      print("Translation failed: \(error)")
+                      self.player.sendOSD(.translationFailed(error.localizedDescription))
+                  }
+                  
+                  // Update completed groups and log progress
+                  syncQueue.async {
+                      completedGroups += 1
+                      
+                      // Calculate elapsed time
+                      let elapsedTime = Date().timeIntervalSince(startTime)
+                      
+                      // Estimate remaining time
+                      let estimatedTotalTime = (elapsedTime / Double(completedGroups)) * Double(totalGroups)
+                      let remainingTime = estimatedTotalTime - elapsedTime
+                    
+                      // Log progress
+                      print("Progress: \(completedGroups)/\(totalGroups) groups done.")
+                      print("Elapsed time: \(elapsedTime.formattedTime()), Estimated remaining time: \(remainingTime.formattedTime())")
+                    
+                      self.player.sendOSD(.translating(completedGroups, totalGroups))
+                  }
+
+                  dispatchGroup.leave()
+              }
+          }
+      }
+
+      dispatchGroup.notify(queue: .main) {
+          // Sort translated groups and flatten the array
+          let sortedTranslatedBlocks = translatedGroups.sorted(by: { $0.index < $1.index }).flatMap({ $0.blocks })
+          completion(sortedTranslatedBlocks)
+      }
+  }
+
+
+  func rebuildSRT(from blocks: [SubtitleBlock]) -> String {
+      return blocks.map { "\($0.index)\r\n\($0.timestamp)\r\n\($0.text)\r\n" }.joined(separator: "\r\n")
+  }
+
+  @IBAction func translateSubtitles(_ sender: Any) {
+    guard let currentSub = player.info.subTracks.first(where: { $0.id == player.info.sid }) else {
+      Logger.log("No current subtitle track found.")
+      return
+    }
+    
+    guard let filePath = currentSub.externalFilename else {
+      Logger.log("No external subtitle file found.")
+      return
+    }
+
+    // Read the subtitle file content
+    guard let srtContent = readSRTFile(at: filePath) else {
+        Logger.log("Failed to read the subtitle file at \(filePath).")
+        return
+    }
+    
+    player.sendOSD(.startTranslation)
+    let blocks = parseSRT(srtContent)
+    
+    let selectedLanguageName = languageDropdown.stringValue
+    guard let selectedLanguageCode = languages[selectedLanguageName] else {
+      Logger.log("Selected language code not found for \(selectedLanguageName)")
+      return
+    }
+    
+    translateSRT(blocks, source: "auto", target: selectedLanguageCode, maxWorkers: 5) { translatedBlocks in
+      let translatedSRT = self.rebuildSRT(from: translatedBlocks)
+      
+      // Convert the translated SRT string into Data
+      if let srtData = translatedSRT.data(using: .utf8) {
+          // Extract the original file name
+          let originalFileName = URL(fileURLWithPath: filePath).lastPathComponent
+          
+          // Save the translated file with the 'PL' language code prefix
+        if let savedUrl = self.saveSubtitle(data: srtData, fileName: originalFileName, languageCode: selectedLanguageCode) {
+            Logger.log("Saved subtitle to \(savedUrl.path)")
+            
+            // Load the saved subtitle into the player
+            self.player.loadExternalSubFile(savedUrl)
+            self.player.sendOSD(.translatedSub(savedUrl.lastPathComponent))
+          } else {
+              Logger.log("Failed to save the translated subtitle.")
+          }
+      } else {
+          Logger.log("Failed to convert the translated SRT to data.")
+      }
+    }
+  }
+  
+  func saveSubtitle(data: Data, fileName: String, languageCode: String) -> URL? {
+      // Create the file name with the language code prefix
+      let subFilename = "[\(languageCode.uppercased())] \(fileName)"
+      
+      // Attempt to save the file in the temp directory
+      guard let url = data.saveToFolder(Utility.tempDirURL, filename: subFilename) else {
+          Logger.log("Failed to save subtitle with language code: \(languageCode)")
+          return nil
+      }
+      
+      return url
+  }
+  
   @IBAction func searchOnlineAction(_ sender: AnyObject) {
     mainWindow.menuActionHandler.menuFindOnlineSub(.dummy)
   }

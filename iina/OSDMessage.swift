@@ -89,6 +89,11 @@ enum OSDMessage {
   case playlistLoop
   case noLoop
 
+  case startTranslation // начало перевода
+  case translating(Int, Int) // текущий прогресс перевода, например: 3 из 5 блоков
+  case translatedSub(String) // успешный перевод субтитров с указанием имени файла
+  case translationFailed(String) // ошибка перевода с сообщением об ошибке
+  
   case custom(String)
   case customWithDetail(String, String)
 
@@ -393,6 +398,27 @@ enum OSDMessage {
     case .savedSub:
       return (
         NSLocalizedString("osd.sub_saved", comment: "Subtitle saved"),
+        .normal
+      )
+      
+    case .startTranslation:
+      return (NSLocalizedString("osd.translation_start", comment: "Translation Started"), .normal)
+          
+    case .translating(let completed, let total):
+      return (
+        String(format: NSLocalizedString("osd.translation_progress", comment: "Translating: %i/%i blocks completed"), completed, total),
+        .withProgress(Double(completed) / Double(total))
+      )
+      
+    case .translatedSub(let filename):
+      return (
+        String(format: NSLocalizedString("osd.translated_sub", comment: "Translated Subtitle Saved: %@"), filename),
+        .normal
+      )
+      
+    case .translationFailed(let error):
+      return (
+        String(format: NSLocalizedString("osd.translation_failed", comment: "Translation Failed: %@"), error),
         .normal
       )
 
