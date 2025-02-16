@@ -39,6 +39,10 @@ class JavascriptPlugin: NSObject {
     case cannotLoadPlugin
   }
 
+  static var hasYTDL: Bool {
+    return plugins.contains { $0.identifier == "io.iina.ytdl" }
+  }
+
   static var plugins = loadPlugins() {
     didSet {
       NotificationCenter.default.post(Notification(name: .iinaPluginChanged))
@@ -68,6 +72,7 @@ class JavascriptPlugin: NSObject {
   var identifier: String
   let version: String
   let desc: String?
+  /// The plugin is a symlink of an external folder, mainly by the CLI
   var isExternal: Bool = false
 
   var root: URL
@@ -97,7 +102,11 @@ class JavascriptPlugin: NSObject {
   lazy var preferences: [String: Any] = {
     NSDictionary(contentsOfFile: preferencesFileURL.path) as? [String: Any] ?? [:]
   }()
-  let defaultPrefernces: [String: Any]
+  let defaultPreferences: [String: Any]
+
+  static func recreateAllPlugins() {
+    plugins = loadPlugins()
+  }
 
   static private func loadPlugins() -> [JavascriptPlugin] {
     guard IINA_ENABLE_PLUGIN_SYSTEM else { return [] }
@@ -407,11 +416,11 @@ class JavascriptPlugin: NSObject {
     self.preferencesPageURL = resolvePath(preferencesPage, root: root)
     self.helpPageURL = resolvePath(helpPage, root: root, allowNetwork: true)
 
-    if let defaultPrefernces = jsonDict["preferenceDefaults"] as? [String: Any] {
-      self.defaultPrefernces = defaultPrefernces
+    if let defaultPreferences = jsonDict["preferenceDefaults"] as? [String: Any] {
+      self.defaultPreferences = defaultPreferences
     } else {
       Logger.log("Unable to read preferenceDefaults", level: .warning)
-      self.defaultPrefernces = [:]
+      self.defaultPreferences = [:]
     }
 
     super.init()

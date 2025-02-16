@@ -48,6 +48,10 @@ class PlayerWindowController: NSWindowController, NSWindowDelegate {
   internal lazy var verticalScrollAction: Preference.ScrollAction = Preference.enum(for: .verticalScrollAction)
   
   internal var observedPrefKeys: [Preference.Key] = [
+    .enableToneMapping,
+    .toneMappingTargetPeak,
+    .loadIccProfile,
+    .toneMappingAlgorithm,
     .themeMaterial,
     .showRemainingTime,
     .alwaysFloatOnTop,
@@ -68,6 +72,11 @@ class PlayerWindowController: NSWindowController, NSWindowDelegate {
     guard let keyPath = keyPath, let change = change else { return }
     
     switch keyPath {
+    case PK.enableToneMapping.rawValue,
+      PK.toneMappingTargetPeak.rawValue,
+      PK.loadIccProfile.rawValue,
+      PK.toneMappingAlgorithm.rawValue:
+      videoView.refreshEdrMode()
     case PK.themeMaterial.rawValue:
       if let newValue = change[.newKey] as? Int {
         setMaterial(Preference.Theme(rawValue: newValue))
@@ -161,12 +170,15 @@ class PlayerWindowController: NSWindowController, NSWindowDelegate {
    */
   internal var pendingShow = false
 
-  // MARK: - Initiaization
+  // MARK: - Initialization
 
   override func windowDidLoad() {
     super.windowDidLoad()
     loaded = true
-    
+    // Issue #5319 seemed to be triggered by the window not loading. Need to know when the window
+    // has loaded to be able to debug such issues.
+    log("Player window has been loaded")
+
     guard let window = window else { return }
     
     // Insert `menuActionHandler` into the responder chain
@@ -593,9 +605,9 @@ class PlayerWindowController: NSWindowController, NSWindowDelegate {
     }
   }
   
-  func updatePlayButtonState(_ state: NSControl.StateValue) {
+  func updatePlayButtonState(paused: Bool) {
     guard loaded else { return }
-    playButton.state = state
+    playButton.image = NSImage(named: paused ? "play" : "pause")
   }
 
   /** This method will not set `isOntop`! */

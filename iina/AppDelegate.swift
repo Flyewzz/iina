@@ -194,12 +194,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
 
     // Useful to know the versions of significant dependencies that are being used so log that
     // information as well when it can be obtained.
-
-    // The version of mpv is not logged at this point because mpv does not provide a static
-    // method that returns the version. To obtain version related information you must
-    // construct a mpv object, which has side effects. So the mpv version is logged in
-    // applicationDidFinishLaunching to preserve the existing order of initialization.
-
+    Logger.log(MPVOptionDefaults.shared.mpvVersion)
     Logger.log("FFmpeg \(String(cString: av_version_info()))")
     // FFmpeg libraries and their versions in alphabetical order.
     let libraries: [(name: String, version: UInt32)] = [("libavcodec", avcodec_version()), ("libavformat", avformat_version()), ("libavutil", avutil_version()), ("libswscale", swscale_version())]
@@ -208,6 +203,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
       // format which needs to be decoded into a string for display.
       Logger.log("  \(library.name) \(AppDelegate.versionAsString(library.version))")
     }
+    Logger.log("libass \(MPVOptionDefaults.shared.libassVersion)")
+
     logBuildDetails()
     logPlatformDetails()
 
@@ -312,7 +309,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     JavascriptPlugin.loadGlobalInstances()
 
     let mpv = PlayerCore.active.mpv!
-    Logger.log("Using \(mpv.mpvVersion) and libass \(mpv.libassVersion)")
     Logger.log("Configuration when building mpv: \(mpv.getString(MPVProperty.mpvConfiguration)!)", level: .verbose)
 
     if RemoteCommandController.useSystemMediaControl {
@@ -718,7 +714,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     
     // if installing a plugin package
     if let pluginPackageURL = urls.first(where: { $0.pathExtension == "iinaplgz" }) {
-      showPreferences(self)
       preferenceWindowController.performAction(.installPlugin(url: pluginPackageURL))
       return
     }
@@ -838,7 +833,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
       }
 
       // enqueue
-      if let enqueueValue = queryDict["enqueue"], enqueueValue == "1", !PlayerCore.lastActive.info.playlist.isEmpty {
+      let playlistEmpty = PlayerCore.lastActive.info.$playlist.withLock { $0.isEmpty }
+      if let enqueueValue = queryDict["enqueue"], enqueueValue == "1", !playlistEmpty {
         PlayerCore.lastActive.addToPlaylist(urlValue)
         PlayerCore.lastActive.postNotification(.iinaPlaylistChanged)
         PlayerCore.lastActive.sendOSD(.addToPlaylist(1))
@@ -848,7 +844,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
 
       // presentation options
       if let fsValue = queryDict["full_screen"], fsValue == "1" {
-        // full_screeen
+        // full_screen
         player.mpv.setFlag(MPVOption.Window.fullscreen, true)
       } else if let pipValue = queryDict["pip"], pipValue == "1" {
         // pip
@@ -897,7 +893,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     Logger.log("Menu - Open URL")
     openURLWindow.isAlternativeAction = sender.tag == AlternativeMenuItemTag
     openURLWindow.showWindow(nil)
-    openURLWindow.resetFields()
+    openURLWindow.resetWindowState()
   }
 
   @IBAction func menuNewWindow(_ sender: Any) {
@@ -919,6 +915,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
 
   @IBAction func showPreferences(_ sender: AnyObject) {
     preferenceWindowController.showWindow(self)
+  }
+
+  @objc func showPluginPreferences(_ sender: NSMenuItem) {
+    preferenceWindowController.openPreferenceView(withNibName: "PrefPluginViewController")
   }
 
   @IBAction func showVideoFilterWindow(_ sender: AnyObject) {
