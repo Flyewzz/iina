@@ -200,6 +200,9 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
   @IBOutlet weak var secSubTableView: NSTableView!
   
   @IBOutlet weak var languageDropdown: NSComboBox!
+  @IBOutlet weak var languageLabel: NSTextField!
+  @IBOutlet weak var languageDropdown2: NSComboBox!
+  @IBOutlet weak var languageLabel2: NSTextField!
 
   @IBOutlet weak var rotateSegment: NSSegmentedControl!
 
@@ -317,8 +320,9 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
       "Ukrainian": "uk",
   ]
   
-  // selected language (English, Russian, Polish, etc.)
-  var selectedLanguage: (String, String) = ("English", "en")
+  // selected languages (English, Russian, Polish, etc.)
+  var selectedLanguage: (String, String) = ("Polish", "pl")
+  var selectedLanguage2: (String, String) = ("Russian", "ru")
   
 
   var downShift: CGFloat = 0 {
@@ -379,9 +383,35 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
       languageDropdown.addItem(withObjectValue: lang)
     }
     
+    languageDropdown2.removeAllItems()
+    for (lang, _) in languages.sorted(by: { $0.key < $1.key }) {
+      languageDropdown2.addItem(withObjectValue: lang)
+    }
+    
     let defaultIndex = languageDropdown.indexOfItem(withObjectValue: selectedLanguage.0)
     if defaultIndex >= 0 {
       languageDropdown.selectItem(at: defaultIndex)
+    }
+    
+    let defaultIndex2 = languageDropdown2.indexOfItem(withObjectValue: selectedLanguage2.0)
+    if defaultIndex2 >= 0 {
+      languageDropdown2.selectItem(at: defaultIndex2)
+    }
+    
+    // Устанавливаем метки для выпадающих списков, если они доступны
+    if let languageLabel = languageLabel {
+      languageLabel.stringValue = "Primary Language:"
+    }
+    if let languageLabel2 = languageLabel2 {
+      languageLabel2.stringValue = "Secondary Language:"
+    }
+    
+    // Добавляем обработчики изменений для выпадающих списков, если они доступны
+    languageDropdown.target = self
+    languageDropdown.action = #selector(languageDropdownChanged)
+    if let languageDropdown2 = languageDropdown2 {
+      languageDropdown2.target = self
+      languageDropdown2.action = #selector(languageDropdown2Changed)
     }
     
     
@@ -1472,44 +1502,111 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
       return
     }
     
+    // Получаем выбранные языки
     let selectedLanguageName = languageDropdown.stringValue
+    let selectedLanguageName2 = languageDropdown2.stringValue
+    
     guard let selectedLanguageCode = languages[selectedLanguageName] else {
       Logger.log("Selected language code not found for \(selectedLanguageName)")
       player.sendOSD(.translationFailed("Invalid target language selected"))
       return
     }
     
-    Logger.log("Translating to \(selectedLanguageName) (\(selectedLanguageCode))")
+    guard let selectedLanguageCode2 = languages[selectedLanguageName2] else {
+      Logger.log("Selected language code not found for \(selectedLanguageName2)")
+      player.sendOSD(.translationFailed("Invalid target language selected"))
+      return
+    }
     
-    translateSRT(blocks, source: "auto", target: selectedLanguageCode, maxWorkers: 5) { translatedBlocks in
-      let translatedSRT = self.rebuildSRT(from: translatedBlocks)
-      
-      // Convert the translated SRT string into Data
-      if let srtData = translatedSRT.data(using: .utf8) {
-          // Extract the original file name
-          let originalFileName = self.player.info.currentURL?.deletingPathExtension().lastPathComponent ?? "video"
-          
-          // Save the translated file with the language code prefix
-        if let savedUrl = self.saveSubtitle(data: srtData, fileName: originalFileName, languageCode: selectedLanguageCode) {
-            Logger.log("Saved subtitle to \(savedUrl.path)")
+    Logger.log("Translating to \(selectedLanguageName) (\(selectedLanguageCode)) and \(selectedLanguageName2) (\(selectedLanguageCode2))")
+    
+    // Асинхронная обработка двух переводов с синхронизацией
+    let dispatchGroup = DispatchGroup()
+    let syncQueue = DispatchQueue(label: "com.iina.translateSubtitles.syncQueue")
+    
+    var translatedBlocks1: [SubtitleBlock] = []
+    var translatedBlocks2: [SubtitleBlock] = []
+    var translationErrors: [String] = []
+    
+    // Запускаем первый перевод
+    dispatchGroup.enter()
+    translateSRT(blocks, source: "auto", target: selectedLanguageCode, maxWorkers: 5) { blocks1 in
+        syncQueue.async {
+            translatedBlocks1 = blocks1
+        }
+        dispatchGroup.leave()
+    }
+    
+    // Запускаем второй перевод
+    dispatchGroup.enter()
+    translateSRT(blocks, source: "auto", target: selectedLanguageCode2, maxWorkers: 5) { blocks2 in
+        syncQueue.async {
+            translatedBlocks2 = blocks2
+        }
+        dispatchGroup.leave()
+    }
+    
+    // Ждем завершения обоих переводов
+    dispatchGroup.notify(queue: .main) {
+        // Проверяем, что оба перевода успешны
+        if translatedBlocks1.isEmpty || translatedBlocks2.isEmpty {
+            let errorMessage = translatedBlocks1.isEmpty && translatedBlocks2.isEmpty ?
+                "Both translations failed" :
+                (translatedBlocks1.isEmpty ? "First translation failed" : "Second translation failed")
             
-            // Загружаем переведенные субтитры в плеер
-            DispatchQueue.main.async {
-              self.player.loadExternalSubFile(savedUrl)
-              self.player.sendOSD(.translatedSub(savedUrl.lastPathComponent))
+            Logger.log(errorMessage)
+            self.player.sendOSD(.translationFailed(errorMessage))
+            return
+        }
+        
+        // Сохраняем первый перевод (primary)
+        let translatedSRT1 = self.rebuildSRT(from: translatedBlocks1)
+        if let srtData1 = translatedSRT1.data(using: .utf8) {
+            let originalFileName = self.player.info.currentURL?.deletingPathExtension().lastPathComponent ?? "video"
+            
+            if let savedUrl1 = self.saveSubtitle(data: srtData1, fileName: originalFileName, languageCode: selectedLanguageCode) {
+                Logger.log("Saved primary subtitle to \(savedUrl1.path)")
+                
+                // Сохраняем второй перевод (secondary)
+                let translatedSRT2 = self.rebuildSRT(from: translatedBlocks2)
+                if let srtData2 = translatedSRT2.data(using: .utf8) {
+                    if let savedUrl2 = self.saveSubtitle(data: srtData2, fileName: originalFileName, languageCode: selectedLanguageCode2) {
+                        Logger.log("Saved secondary subtitle to \(savedUrl2.path)")
+                        
+                        // Загружаем оба перевода в плеер
+                        DispatchQueue.main.async {
+                            self.player.loadExternalSubFile(savedUrl1)
+                            self.player.loadExternalSubFile(savedUrl2)
+                            // Находим ID только что загруженного вторичного субтитра
+                            if let secondarySub = self.player.info.subTracks.last(where: { $0.externalFilename == savedUrl2.path }) {
+                                self.player.setTrack(secondarySub.id, forType: .secondSub)
+                            }
+                            self.player.sendOSD(.translatedSub("Both translations completed"))
+                        }
+                    } else {
+                        Logger.log("Failed to save the secondary translated subtitle.")
+                        DispatchQueue.main.async {
+                            self.player.sendOSD(.translationFailed("Failed to save secondary translation"))
+                        }
+                    }
+                } else {
+                    Logger.log("Failed to convert the secondary translated SRT to data.")
+                    DispatchQueue.main.async {
+                        self.player.sendOSD(.translationFailed("Failed to convert secondary translation data"))
+                    }
+                }
+            } else {
+                Logger.log("Failed to save the primary translated subtitle.")
+                DispatchQueue.main.async {
+                    self.player.sendOSD(.translationFailed("Failed to save primary translation"))
+                }
             }
-          } else {
-              Logger.log("Failed to save the translated subtitle.")
-              DispatchQueue.main.async {
-                self.player.sendOSD(.translationFailed("Failed to save translated subtitle"))
-              }
-          }
-      } else {
-          Logger.log("Failed to convert the translated SRT to data.")
-          DispatchQueue.main.async {
-            self.player.sendOSD(.translationFailed("Failed to convert translated data"))
-          }
-      }
+        } else {
+            Logger.log("Failed to convert the primary translated SRT to data.")
+            DispatchQueue.main.async {
+                self.player.sendOSD(.translationFailed("Failed to convert primary translation data"))
+            }
+        }
     }
   }
   
@@ -1613,6 +1710,26 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
   @IBAction func subFontAction(_ sender: AnyObject) {
     Utility.quickFontPickerWindow() {
       self.player.setSubFont($0 ?? "")
+    }
+  }
+
+  // MARK: - Language selection handlers
+  
+  @objc func languageDropdownChanged(_ sender: NSComboBox) {
+    if let selectedLanguageName = sender.stringValue as String?,
+       let languageCode = languages[selectedLanguageName] {
+      selectedLanguage = (selectedLanguageName, languageCode)
+      Logger.log("Primary language changed to: \(selectedLanguageName) (\(languageCode))")
+    }
+  }
+  
+  @objc func languageDropdown2Changed(_ sender: NSComboBox) {
+    // Проверяем, что sender - это именно languageDropdown2
+    if sender === languageDropdown2,
+       let selectedLanguageName = sender.stringValue as String?,
+       let languageCode = languages[selectedLanguageName] {
+      selectedLanguage2 = (selectedLanguageName, languageCode)
+      Logger.log("Secondary language changed to: \(selectedLanguageName) (\(languageCode))")
     }
   }
 
