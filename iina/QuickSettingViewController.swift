@@ -37,77 +37,6 @@ struct SubtitleBlock {
   let text: String
 }
 
-//func translateGroup(_ blocks: [SubtitleBlock], source: String, target: String, completion: @escaping (Result<[String], Error>) -> Void) {
-//    // Combine subtitle block texts with newlines
-//    let textToTranslate = blocks.map { $0.text }.joined(separator: "\n")
-//    
-//    guard let url = URL(string: "http://localhost:5001/translate") else {
-//        completion(.failure(NSError(domain: "Invalid URL", code: -1, userInfo: nil)))
-//        return
-//    }
-//
-//    var request = URLRequest(url: url)
-//    request.httpMethod = "POST"
-//    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-//    request.timeoutInterval = 300.0 // Set timeout to 30 seconds
-//
-//    let body: [String: Any] = [
-//        "q": textToTranslate,
-//        "source": source,
-//        "target": target
-//    ]
-//
-//    do {
-//        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-//    } catch {
-//        completion(.failure(error))
-//        return
-//    }
-//
-//    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-//        if let error = error {
-//            completion(.failure(error))
-//            return
-//        }
-//
-//        // Check the response status code
-//        guard let httpResponse = response as? HTTPURLResponse else {
-//            completion(.failure(NSError(domain: "No response", code: -1, userInfo: nil)))
-//            return
-//        }
-//
-//        if !(200...299).contains(httpResponse.statusCode) {
-//            // Print the response body for debugging
-//            if let data = data, let responseBody = String(data: data, encoding: .utf8) {
-//                print("Response Body: \(responseBody)")
-//            }
-//
-//            let statusCode = httpResponse.statusCode
-//            completion(.failure(NSError(domain: "Invalid response", code: statusCode, userInfo: nil)))
-//            return
-//        }
-//
-//        guard let data = data else {
-//            completion(.failure(NSError(domain: "No data received", code: -1, userInfo: nil)))
-//            return
-//        }
-//
-//        do {
-//            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-//               let translatedText = json["translatedText"] as? String {
-//                let translatedSentences = translatedText.components(separatedBy: "\n")
-//                completion(.success(translatedSentences))
-//            } else {
-//                completion(.failure(NSError(domain: "Unexpected response format", code: -1, userInfo: nil)))
-//            }
-//        } catch {
-//            completion(.failure(error))
-//        }
-//    }
-//
-//    task.resume()
-//}
-
 extension TimeInterval {
     func formattedTime() -> String {
         let hours = Int(self) / 3600
@@ -322,7 +251,7 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
   
   // selected languages (English, Russian, Polish, etc.)
   var selectedLanguage: (String, String) = ("Polish", "pl")
-  var selectedLanguage2: (String, String) = ("Russian", "ru")
+  var selectedLanguage2: (String, String) = ("Russian", "ru") // Второй язык может быть пустым
   
 
   var downShift: CGFloat = 0 {
@@ -384,6 +313,8 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
     }
     
     languageDropdown2.removeAllItems()
+    // Добавляем пустой элемент первым для возможности перевода только на один язык
+    languageDropdown2.addItem(withObjectValue: "")
     for (lang, _) in languages.sorted(by: { $0.key < $1.key }) {
       languageDropdown2.addItem(withObjectValue: lang)
     }
@@ -391,11 +322,6 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
     let defaultIndex = languageDropdown.indexOfItem(withObjectValue: selectedLanguage.0)
     if defaultIndex >= 0 {
       languageDropdown.selectItem(at: defaultIndex)
-    }
-    
-    let defaultIndex2 = languageDropdown2.indexOfItem(withObjectValue: selectedLanguage2.0)
-    if defaultIndex2 >= 0 {
-      languageDropdown2.selectItem(at: defaultIndex2)
     }
     
     // Устанавливаем метки для выпадающих списков, если они доступны
@@ -1512,20 +1438,17 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
       return
     }
     
-    guard let selectedLanguageCode2 = languages[selectedLanguageName2] else {
-      Logger.log("Selected language code not found for \(selectedLanguageName2)")
-      player.sendOSD(.translationFailed("Invalid target language selected"))
-      return
-    }
+    // Проверяем, выбран ли второй язык
+    let selectedLanguageCode2 = languages[selectedLanguageName2]
     
-    Logger.log("Translating to \(selectedLanguageName) (\(selectedLanguageCode)) and \(selectedLanguageName2) (\(selectedLanguageCode2))")
+    Logger.log("Translating to \(selectedLanguageName) (\(selectedLanguageCode))" + (selectedLanguageCode2 != nil ? " and \(selectedLanguageName2) (\(selectedLanguageCode2!))" : ""))
     
-    // Асинхронная обработка двух переводов с синхронизацией
+    // Асинхронная обработка переводов с синхронизацией
     let dispatchGroup = DispatchGroup()
     let syncQueue = DispatchQueue(label: "com.iina.translateSubtitles.syncQueue")
     
     var translatedBlocks1: [SubtitleBlock] = []
-    var translatedBlocks2: [SubtitleBlock] = []
+    var translatedBlocks2: [SubtitleBlock]?
     var translationErrors: [String] = []
     
     // Запускаем первый перевод
@@ -1537,25 +1460,23 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
         dispatchGroup.leave()
     }
     
-    // Запускаем второй перевод
-    dispatchGroup.enter()
-    translateSRT(blocks, source: "auto", target: selectedLanguageCode2, maxWorkers: 5) { blocks2 in
-        syncQueue.async {
-            translatedBlocks2 = blocks2
+    // Запускаем второй перевод, если он выбран
+    if let languageCode2 = selectedLanguageCode2 {
+        dispatchGroup.enter()
+        translateSRT(blocks, source: "auto", target: languageCode2, maxWorkers: 5) { blocks2 in
+            syncQueue.async {
+                translatedBlocks2 = blocks2
+            }
+            dispatchGroup.leave()
         }
-        dispatchGroup.leave()
     }
     
-    // Ждем завершения обоих переводов
+    // Ждем завершения переводов
     dispatchGroup.notify(queue: .main) {
-        // Проверяем, что оба перевода успешны
-        if translatedBlocks1.isEmpty || translatedBlocks2.isEmpty {
-            let errorMessage = translatedBlocks1.isEmpty && translatedBlocks2.isEmpty ?
-                "Both translations failed" :
-                (translatedBlocks1.isEmpty ? "First translation failed" : "Second translation failed")
-            
-            Logger.log(errorMessage)
-            self.player.sendOSD(.translationFailed(errorMessage))
+        // Проверяем, что первый перевод успешен
+        if translatedBlocks1.isEmpty {
+            Logger.log("First translation failed")
+            self.player.sendOSD(.translationFailed("First translation failed"))
             return
         }
         
@@ -1567,32 +1488,72 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
             if let savedUrl1 = self.saveSubtitle(data: srtData1, fileName: originalFileName, languageCode: selectedLanguageCode) {
                 Logger.log("Saved primary subtitle to \(savedUrl1.path)")
                 
-                // Сохраняем второй перевод (secondary)
-                let translatedSRT2 = self.rebuildSRT(from: translatedBlocks2)
-                if let srtData2 = translatedSRT2.data(using: .utf8) {
-                    if let savedUrl2 = self.saveSubtitle(data: srtData2, fileName: originalFileName, languageCode: selectedLanguageCode2) {
-                        Logger.log("Saved secondary subtitle to \(savedUrl2.path)")
-                        
-                        // Загружаем оба перевода в плеер
-                        DispatchQueue.main.async {
-                            self.player.loadExternalSubFile(savedUrl1)
-                            self.player.loadExternalSubFile(savedUrl2)
-                            // Находим ID только что загруженного вторичного субтитра
-                            if let secondarySub = self.player.info.subTracks.last(where: { $0.externalFilename == savedUrl2.path }) {
-                                self.player.setTrack(secondarySub.id, forType: .secondSub)
+                // Если есть второй перевод, сохраняем его
+                if let languageCode2 = selectedLanguageCode2, let blocks2 = translatedBlocks2, !blocks2.isEmpty {
+                    let translatedSRT2 = self.rebuildSRT(from: blocks2)
+                    if let srtData2 = translatedSRT2.data(using: .utf8) {
+                        if let savedUrl2 = self.saveSubtitle(data: srtData2, fileName: originalFileName, languageCode: languageCode2) {
+                            Logger.log("Saved secondary subtitle to \(savedUrl2.path)")
+                            
+                            // Загружаем оба перевода в плеер
+                            DispatchQueue.main.async {
+                                self.player.loadExternalSubFile(savedUrl1)
+                                self.player.loadExternalSubFile(savedUrl2)
+                                
+                                // Ждем немного, чтобы субтитры загрузились
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    // Находим ID только что загруженных субтитров
+                                    if let primarySub = self.player.info.subTracks.last(where: { $0.externalFilename == savedUrl1.path }) {
+                                        // Выбираем первый перевод для основных субтитров
+                                        self.player.setTrack(primarySub.id, forType: .sub)
+                                        Logger.log("Selected primary subtitle: \(primarySub.id) - \(primarySub.readableTitle)")
+                                    }
+                                    
+                                    if let secondarySub = self.player.info.subTracks.last(where: { $0.externalFilename == savedUrl2.path }) {
+                                        // Выбираем второй перевод для дополнительных субтитров
+                                        self.player.setTrack(secondarySub.id, forType: .secondSub)
+                                        Logger.log("Selected secondary subtitle: \(secondarySub.id) - \(secondarySub.readableTitle)")
+                                    }
+                                    
+                                    // Обновляем таблицы
+                                    self.subTableView.reloadData()
+                                    self.secSubTableView.reloadData()
+                                    
+                                    self.player.sendOSD(.translatedSub("Both translations completed and selected"))
+                                }
                             }
-                            self.player.sendOSD(.translatedSub("Both translations completed"))
+                        } else {
+                            Logger.log("Failed to save the secondary translated subtitle.")
+                            DispatchQueue.main.async {
+                                self.player.sendOSD(.translationFailed("Failed to save secondary translation"))
+                            }
                         }
                     } else {
-                        Logger.log("Failed to save the secondary translated subtitle.")
+                        Logger.log("Failed to convert the secondary translated SRT to data.")
                         DispatchQueue.main.async {
-                            self.player.sendOSD(.translationFailed("Failed to save secondary translation"))
+                            self.player.sendOSD(.translationFailed("Failed to convert secondary translation data"))
                         }
                     }
                 } else {
-                    Logger.log("Failed to convert the secondary translated SRT to data.")
+                    // Если второго перевода нет, загружаем только первый
                     DispatchQueue.main.async {
-                        self.player.sendOSD(.translationFailed("Failed to convert secondary translation data"))
+                        self.player.loadExternalSubFile(savedUrl1)
+                        
+                        // Ждем немного, чтобы субтитры загрузились
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            // Находим ID только что загруженного субтитра
+                            if let primarySub = self.player.info.subTracks.last(where: { $0.externalFilename == savedUrl1.path }) {
+                                // Выбираем перевод для основных субтитров
+                                self.player.setTrack(primarySub.id, forType: .sub)
+                                Logger.log("Selected single subtitle: \(primarySub.id) - \(primarySub.readableTitle)")
+                            }
+                            
+                            // Обновляем таблицы
+                            self.subTableView.reloadData()
+                            self.secSubTableView.reloadData()
+                            
+                            self.player.sendOSD(.translatedSub("Translation completed and selected"))
+                        }
                     }
                 }
             } else {
@@ -1727,9 +1688,14 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
     // Проверяем, что sender - это именно languageDropdown2
     if sender === languageDropdown2,
        let selectedLanguageName = sender.stringValue as String?,
+       !selectedLanguageName.isEmpty,
        let languageCode = languages[selectedLanguageName] {
       selectedLanguage2 = (selectedLanguageName, languageCode)
       Logger.log("Secondary language changed to: \(selectedLanguageName) (\(languageCode))")
+    } else {
+      // Если выбран пустой элемент или язык не найден
+      selectedLanguage2 = ("", "")
+      Logger.log("Secondary language cleared")
     }
   }
 
