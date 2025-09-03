@@ -1259,32 +1259,227 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
   func rebuildSRT(from blocks: [SubtitleBlock]) -> String {
       return blocks.map { "\($0.index)\r\n\($0.timestamp)\r\n\($0.text)\r\n" }.joined(separator: "\r\n")
   }
+  
 
+  func findFFmpegPath() -> String? {
+    // Проверка нескольких возможных путей к FFmpeg
+    let possiblePaths = [
+      "/opt/homebrew/bin/ffmpeg",
+      "/usr/local/bin/ffmpeg",
+      "/usr/bin/ffmpeg",
+      "/bin/ffmpeg"
+    ]
+    
+    // Сначала проверяем существование файлов
+    for path in possiblePaths {
+      if FileManager.default.fileExists(atPath: path) {
+        Logger.log("Found FFmpeg at: \(path)")
+        return path
+      }
+    }
+    
+    // Если не нашли, пытаемся найти через which
+    let process = Process()
+    let pipe = Pipe()
+    
+    process.launchPath = "/usr/bin/which"
+    process.arguments = ["ffmpeg"]
+    process.standardOutput = pipe
+    
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      Logger.log("Failed to run which command for ffmpeg: \(error)", level: .error)
+      return nil
+    }
+    
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    
+    if let path = output, !path.isEmpty {
+      Logger.log("Found FFmpeg via which: \(path)")
+      return path
+    }
+    
+    Logger.log("FFmpeg not found in system PATH", level: .error)
+    return nil
+  }
+  
+  func extractSubtitlesToMemory(ffmpegPath: String, videoPath: String, trackId: Int) -> String? {
+    Logger.log("Attempting to extract subtitles from \(videoPath), track \(trackId)", level: .debug)
+    
+    // Декодируем URL-кодированные символы в пути
+    guard let decodedPath = videoPath.removingPercentEncoding,
+          let videoURL = URL(string: decodedPath) else {
+      Logger.log("Failed to decode video path: \(videoPath)", level: .error)
+      return nil
+    }
+    
+    let videoPathLocal = videoURL.path
+    
+    Logger.log("Decoded video path: \(videoPathLocal)", level: .debug)
+    
+    // Проверяем, существует ли файл
+    if !FileManager.default.fileExists(atPath: videoPathLocal) {
+      Logger.log("Video file does not exist at path: \(videoPathLocal)", level: .error)
+      return nil
+    }
+    
+    Logger.log("Video file exists at path: \(videoPathLocal)", level: .debug)
+    
+    let process = Process()
+    let pipe = Pipe()
+    let errorPipe = Pipe()
+    
+    process.launchPath = ffmpegPath
+    process.arguments = [
+      "-i", videoPathLocal,
+      "-map", "0:s:\(trackId-1)",
+      "-c:s", "copy",
+      "-f", "srt",
+      "-y", // overwrite output without asking
+      "-"
+    ]
+    
+    process.standardOutput = pipe
+    process.standardError = errorPipe
+    
+    Logger.log("FFmpeg command: \(ffmpegPath) \(process.arguments?.joined(separator: " ") ?? "")", level: .debug)
+    
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      Logger.log("Failed to run FFmpeg process: \(error)", level: .error)
+      return nil
+    }
+    
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+    
+    // Логируем ошибки FFmpeg
+    if let error = String(data: errorData, encoding: .utf8), !error.isEmpty {
+      Logger.log("FFmpeg error output: \(error)", level: .error)
+    }
+    
+    let exitCode = process.terminationStatus
+    if exitCode != 0 {
+      Logger.log("FFmpeg exited with code: \(exitCode)", level: .error)
+      return nil
+    }
+    
+    let result = String(data: data, encoding: .utf8)
+    
+    if let result = result {
+      let charCount = result.count
+      Logger.log("Successfully extracted \(charCount) characters of subtitle text", level: .debug)
+      
+      // Проверяем, что результат не пустой и содержит данные субтитров
+      if charCount > 0 && result.contains("-->") {
+        Logger.log("Subtitle extraction successful, SRT format detected", level: .debug)
+        return result
+      } else {
+        Logger.log("Extracted data appears to be empty or not in SRT format", level: .warning)
+        return nil
+      }
+    } else {
+      Logger.log("Failed to decode subtitle data", level: .error)
+      return nil
+    }
+  }
+  
   @IBAction func translateSubtitles(_ sender: Any) {
     guard let currentSub = player.info.subTracks.first(where: { $0.id == player.info.sid }) else {
       Logger.log("No current subtitle track found.")
+      player.sendOSD(.translationFailed("No subtitle track found"))
       return
     }
     
-    guard let filePath = currentSub.externalFilename else {
-      Logger.log("No external subtitle file found.")
-      return
-    }
-
-    // Read the subtitle file content
-    guard let srtContent = readSRTFile(at: filePath) else {
-        Logger.log("Failed to read the subtitle file at \(filePath).")
+    Logger.log("Starting subtitle translation for track: \(currentSub.id), type: \(currentSub.type)")
+    
+    let srtContent: String?
+    
+    if let filePath = currentSub.externalFilename {
+      // external subtitles
+      Logger.log("External subtitles detected: \(filePath)")
+      
+      // Read the subtitle file content
+      guard let srtFileContent = readSRTFile(at: filePath) else {
+          Logger.log("Failed to read the subtitle file at \(filePath).")
+          player.sendOSD(.translationFailed("Failed to read subtitle file"))
+          return
+      }
+      
+      srtContent = srtFileContent
+    } else {
+      // internal subtitles
+      Logger.log("Internal subtitles detected, track ID: \(currentSub.id)")
+      
+      guard let ffmpegPath = findFFmpegPath() else {
+        Logger.log("FFmpeg not found. Please install it first.")
+        player.sendOSD(.translationFailed("FFmpeg not found. Please install it first."))
         return
+      }
+      
+      Logger.log("Using FFmpeg at: \(ffmpegPath)")
+      
+      // Проверяем, что у нас есть URL видео
+      guard let videoURL = player.info.currentURL else {
+        Logger.log("No current video URL available")
+        player.sendOSD(.translationFailed("No video loaded"))
+        return
+      }
+      
+      // Проверяем, не является ли субтитр изображением
+      if currentSub.isImageSub {
+        Logger.log("Image-based subtitles cannot be translated")
+        player.sendOSD(.translationFailed("Image-based subtitles cannot be translated"))
+        return
+      }
+      
+      // Извлекаем субтитры
+      guard let extractedSubtitles = extractSubtitlesToMemory(
+        ffmpegPath: ffmpegPath,
+        videoPath: videoURL.absoluteString,
+        trackId: currentSub.id
+      ) else {
+        Logger.log("Failed to extract internal subtitles.")
+        player.sendOSD(.translationFailed("Failed to extract internal subtitles"))
+        return
+      }
+      
+      srtContent = extractedSubtitles
+    }
+    
+    // Проверяем, что контент не пустой
+    guard let srtContent = srtContent, !srtContent.isEmpty else {
+      Logger.log("No subtitle content to translate")
+      player.sendOSD(.translationFailed("No subtitle content found"))
+      return
     }
     
     player.sendOSD(.startTranslation)
+    
+    // Парсим SRT
     let blocks = parseSRT(srtContent)
+    Logger.log("Parsed \(blocks.count) subtitle blocks")
+    
+    // Проверяем, что есть блоки для перевода
+    guard !blocks.isEmpty else {
+      Logger.log("No valid subtitle blocks found")
+      player.sendOSD(.translationFailed("No valid subtitle blocks found"))
+      return
+    }
     
     let selectedLanguageName = languageDropdown.stringValue
     guard let selectedLanguageCode = languages[selectedLanguageName] else {
       Logger.log("Selected language code not found for \(selectedLanguageName)")
+      player.sendOSD(.translationFailed("Invalid target language selected"))
       return
     }
+    
+    Logger.log("Translating to \(selectedLanguageName) (\(selectedLanguageCode))")
     
     translateSRT(blocks, source: "auto", target: selectedLanguageCode, maxWorkers: 5) { translatedBlocks in
       let translatedSRT = self.rebuildSRT(from: translatedBlocks)
@@ -1292,27 +1487,35 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
       // Convert the translated SRT string into Data
       if let srtData = translatedSRT.data(using: .utf8) {
           // Extract the original file name
-          let originalFileName = URL(fileURLWithPath: filePath).lastPathComponent
+          let originalFileName = self.player.info.currentURL?.deletingPathExtension().lastPathComponent ?? "video"
           
-          // Save the translated file with the 'PL' language code prefix
+          // Save the translated file with the language code prefix
         if let savedUrl = self.saveSubtitle(data: srtData, fileName: originalFileName, languageCode: selectedLanguageCode) {
             Logger.log("Saved subtitle to \(savedUrl.path)")
             
-            // Load the saved subtitle into the player
-            self.player.loadExternalSubFile(savedUrl)
-            self.player.sendOSD(.translatedSub(savedUrl.lastPathComponent))
+            // Загружаем переведенные субтитры в плеер
+            DispatchQueue.main.async {
+              self.player.loadExternalSubFile(savedUrl)
+              self.player.sendOSD(.translatedSub(savedUrl.lastPathComponent))
+            }
           } else {
               Logger.log("Failed to save the translated subtitle.")
+              DispatchQueue.main.async {
+                self.player.sendOSD(.translationFailed("Failed to save translated subtitle"))
+              }
           }
       } else {
           Logger.log("Failed to convert the translated SRT to data.")
+          DispatchQueue.main.async {
+            self.player.sendOSD(.translationFailed("Failed to convert translated data"))
+          }
       }
     }
   }
   
   func saveSubtitle(data: Data, fileName: String, languageCode: String) -> URL? {
       // Create the file name with the language code prefix
-      let subFilename = "[\(languageCode.uppercased())] \(fileName)"
+      let subFilename = "[\(languageCode.uppercased())] \(fileName).srt"
       
       // Attempt to save the file in the temp directory
       guard let url = data.saveToFolder(Utility.tempDirURL, filename: subFilename) else {
@@ -1320,6 +1523,7 @@ class QuickSettingViewController: NSViewController, NSTableViewDataSource, NSTab
           return nil
       }
       
+      Logger.log("Saved subtitle file: \(url.path)")
       return url
   }
   
